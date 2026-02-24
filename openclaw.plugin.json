@@ -1,0 +1,12 @@
+{
+  "id": "sendblue",
+  "name": "Sendblue iMessage Channel",
+  "version": "1.0.0",
+  "channels": ["sendblue"],
+  "description": "iMessage channel via Sendblue API with typing indicators and read receipts",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

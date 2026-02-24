@@ -1,0 +1,38 @@
+{
+  "name": "sendblue-openclaw-plugin",
+  "version": "1.0.0",
+  "description": "OpenClaw channel plugin for Sendblue iMessage API with typing indicators, read receipts, and HEIC conversion",
+  "main": "index.ts",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "channel": {
+      "id": "sendblue",
+      "label": "Sendblue (iMessage)",
+      "selectionLabel": "Sendblue iMessage API",
+      "docsPath": "/channels/sendblue",
+      "blurb": "iMessage via Sendblue API with typing indicators and read receipts.",
+      "order": 70,
+      "aliases": ["sb"]
+    },
+    "install": {
+      "localPath": "extensions/sendblue",
+      "defaultChoice": "local"
+    }
+  },
+  "keywords": [
+    "openclaw",
+    "sendblue",
+    "imessage",
+    "channel",
+    "plugin",
+    "typing-indicators",
+    "read-receipts",
+    "heic"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
