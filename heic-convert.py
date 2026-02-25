@@ -53,7 +53,11 @@ def main():
     if input_source.startswith('http://') or input_source.startswith('https://'):
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.heic')
         try:
-            req = urllib.request.Request(input_source, headers={'User-Agent': 'OpenClaw/1.0'})
+            # URL-encode spaces and other unsafe chars in the path component
+            from urllib.parse import urlsplit, urlunsplit, quote
+            parts = urlsplit(input_source)
+            safe_url = urlunsplit((parts.scheme, parts.netloc, quote(parts.path, safe='/'), parts.query, parts.fragment))
+            req = urllib.request.Request(safe_url, headers={'User-Agent': 'OpenClaw/1.0'})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 shutil.copyfileobj(resp, tmp)
             tmp.close()

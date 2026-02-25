@@ -174,7 +174,8 @@ async function convertMediaIfHeic(
     return null;
   } catch (e: any) {
     log.warn(`[sendblue] media conversion failed: ${e.message}`);
-    return null;
+    // Fall through: return the original URL so the agent still sees the media
+    return { localPath: mediaUrl, converted: false };
   }
 }
 
@@ -214,9 +215,26 @@ const plugin = {
         isEnabled: (_account: any, cfg: any) => cfg?.channels?.sendblue?.enabled === true,
         isConfigured: (_account: any, cfg: any) =>
           Boolean(cfg?.channels?.sendblue?.apiKey && cfg?.channels?.sendblue?.fromNumber),
+        resolveAllowFrom: ({ cfg }: any) =>
+          (cfg?.channels?.sendblue?.allowFrom ?? []).map((e: string) => String(e)),
+        resolveDefaultTo: ({ cfg }: any) =>
+          cfg?.channels?.sendblue?.allowFrom?.[0] || undefined,
       },
       outbound: {
         deliveryMode: "direct" as const,
+        resolveTarget: ({ cfg, to, allowFrom }: any) => {
+          const config = resolveConfig(cfg);
+          // If target looks like a phone number, use it
+          if (to && /^\+?\d[\d\s\-()]+$/.test(to.trim())) {
+            return { ok: true, to: normalizePhone(to) };
+          }
+          // Fall back to first allowFrom entry
+          const fallback = config?.allowFrom?.[0] ?? allowFrom?.[0];
+          if (fallback) {
+            return { ok: true, to: normalizePhone(fallback) };
+          }
+          return { ok: false, error: new Error("No target phone number. Use E.164 format (e.g. +19145551234)") };
+        },
         sendText: async ({ text, to, cfg }: any) => {
           const config = resolveConfig(cfg);
           if (!config) return { ok: false, error: "sendblue not configured" };
@@ -227,12 +245,62 @@ const plugin = {
           // Stop typing loop — we're sending now
           stopTypingLoop(target);
 
-          const result = await sbSendMessage(target, text, config);
+          let result = await sbSendMessage(target, text, config);
+          // Retry once on transient server error (5xx) or rate limit (429)
+          if (result.status >= 429) {
+            log.warn(`[sendblue] send got ${result.status}, retrying in 2s...`);
+            await new Promise(r => setTimeout(r, 2000));
+            result = await sbSendMessage(target, text, config);
+          }
           if (result.status >= 400) {
             log.error(`[sendblue] send failed: ${JSON.stringify(result.data)}`);
             return { ok: false, error: result.data?.message ?? "send failed" };
           }
           return { ok: true };
+        },
+        sendMedia: async ({ text, to, cfg, mediaUrl }: any) => {
+          const config = resolveConfig(cfg);
+          if (!config) return { ok: false, error: "sendblue not configured" };
+
+          const target = to ?? config.allowFrom[0];
+          if (!target) return { ok: false, error: "no target number" };
+
+          stopTypingLoop(target);
+
+          // Sendblue supports media_url in send-message
+          const body: any = {
+            number: target,
+            content: text || "",
+            from_number: config.fromNumber,
+          };
+          if (mediaUrl) body.media_url = mediaUrl;
+
+          let result = await sbPost("/api/send-message", body, config);
+          // Retry once on transient server error (5xx) or rate limit (429)
+          if (result.status >= 429) {
+            log.warn(`[sendblue] send media got ${result.status}, retrying in 2s...`);
+            await new Promise(r => setTimeout(r, 2000));
+            result = await sbPost("/api/send-message", body, config);
+          }
+          if (result.status >= 400) {
+            log.error(`[sendblue] send media failed: ${JSON.stringify(result.data)}`);
+            return { ok: false, error: result.data?.message ?? "send media failed" };
+          }
+          return { ok: true };
+        },
+      },
+      messaging: {
+        normalizeTarget: (raw: string) => {
+          // Accept phone numbers in any format, normalize to E.164-ish
+          const cleaned = raw.replace(/[\s\-\(\)\.]/g, "");
+          if (/^\+?\d{10,15}$/.test(cleaned)) {
+            return cleaned.startsWith("+") ? cleaned : `+${cleaned}`;
+          }
+          return undefined; // Not a valid phone target
+        },
+        targetResolver: {
+          looksLikeId: (raw: string) => /^\+?\d{10,15}$/.test(raw.replace(/[\s\-\(\)\.]/g, "")),
+          hint: "Use E.164 phone number format (e.g. +19145551234)",
         },
       },
       security: {
@@ -348,7 +416,9 @@ const plugin = {
         return true;
       }
 
-      if (!isInbound || !body.content?.trim()) {
+      const hasContent = !!body.content?.trim();
+      const hasMedia = !!body.media_url;
+      if (!isInbound || (!hasContent && !hasMedia)) {
         res.statusCode = 200;
         res.end("OK");
         return true;
@@ -357,7 +427,7 @@ const plugin = {
       // ── Inbound message processing ──
 
       const senderNumber = body.from_number ?? body.number;
-      const messageText = body.content.trim();
+      const messageText = body.content?.trim() || (hasMedia ? "[image]" : "");
 
       // Check allowlist
       if (config.dmPolicy === "allowlist" && !isAllowedSender(senderNumber, config.allowFrom)) {
@@ -490,6 +560,23 @@ const plugin = {
         readReceipts: config?.sendReadReceipts ?? true,
         typingIndicators: config?.sendTypingIndicators ?? true,
       });
+    });
+
+    // ── Diagnostic: registry visibility check ──
+    api.registerGatewayMethod("sendblue.debug-registry", ({ respond }: any) => {
+      try {
+        const config = resolveConfig(api.config);
+        respond(true, {
+          pluginRegistered: true,
+          configured: !!config,
+          fromNumber: config?.fromNumber ?? null,
+          hasOutboundSendText: typeof channelPlugin.outbound?.sendText === "function",
+          hasOutboundSendMedia: typeof channelPlugin.outbound?.sendMedia === "function",
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e: any) {
+        respond(false, { error: e.message });
+      }
     });
 
     log.info("[sendblue] plugin registered");
