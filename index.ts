@@ -103,6 +103,53 @@ async function sbMarkRead(to: string, config: SendblueChannelConfig) {
   }, config);
 }
 
+// ── "Still thinking" messages ──────────────────────────────────────────
+
+const STILL_THINKING_MESSAGES = [
+  "🦞 Still crunching... claws deep in this one",
+  "🦞 Hang tight — this is taking a sec but I'm on it",
+  "🦞 *claw typing intensifies* — still working",
+  "🦞 Haven't crashed, just thinking really hard rn",
+  "🦞 Big brain moment in progress... stand by",
+  "🦞 Still here! This one's juicy, give me a moment",
+  "🦞 Processing... my claws can only type so fast",
+  "🦞 Deep in the weeds on this — almost there",
+  "🦞 Taking longer than expected but I gotchu",
+  "🦞 *elevator music* ...still working on it",
+  "🦞 Not frozen, just thorough 😤",
+  "🦞 Running the numbers... or reading a lot... either way still here",
+];
+
+const activeStillThinkingTimers = new Map<string, NodeJS.Timeout>();
+
+function startStillThinkingTimer(
+  to: string,
+  config: SendblueChannelConfig,
+  log: any,
+  delayMs: number = 30000
+) {
+  stopStillThinkingTimer(to);
+  const timer = setTimeout(async () => {
+    const msg = STILL_THINKING_MESSAGES[Math.floor(Math.random() * STILL_THINKING_MESSAGES.length)];
+    try {
+      await sbSendMessage(to, msg, config);
+      log.info(`[sendblue] sent still-thinking message to ${to}`);
+    } catch (e: any) {
+      log.warn(`[sendblue] still-thinking message failed: ${e.message}`);
+    }
+    activeStillThinkingTimers.delete(to);
+  }, delayMs);
+  activeStillThinkingTimers.set(to, timer);
+}
+
+function stopStillThinkingTimer(to: string) {
+  const existing = activeStillThinkingTimers.get(to);
+  if (existing) {
+    clearTimeout(existing);
+    activeStillThinkingTimers.delete(to);
+  }
+}
+
 // ── Typing indicator loop ──────────────────────────────────────────────
 
 const activeTypingLoops = new Map<string, NodeJS.Timeout>();
@@ -317,9 +364,12 @@ const plugin = {
           // Keep the channel "alive" — resolve only when abort signal fires
           return new Promise<void>((resolve) => {
             const stop = () => {
-              // Clean up typing loops
+              // Clean up typing loops and still-thinking timers
               for (const [key] of activeTypingLoops) {
                 stopTypingLoop(key);
+              }
+              for (const [key] of activeStillThinkingTimers) {
+                stopStillThinkingTimer(key);
               }
               log.info("[sendblue] channel stopped");
               resolve();
@@ -449,6 +499,9 @@ const plugin = {
         startTypingLoop(senderNumber, config, log);
       }
 
+      // 3) Start "still thinking" timer (fires after 30s if no reply yet)
+      startStillThinkingTimer(senderNumber, config, log, 30000);
+
       // 3) Convert HEIC media if present
       let mediaUrl = body.media_url || undefined;
       let mediaPath: string | undefined;
@@ -525,8 +578,9 @@ const plugin = {
               const text = payload.text ?? "";
               if (!text.trim()) return;
 
-              // Stop typing since we're about to send
+              // Stop typing and still-thinking since we're about to send
               stopTypingLoop(outboundTarget);
+              stopStillThinkingTimer(outboundTarget);
 
               const result = await sbSendMessage(outboundTarget, text, config);
               if (result.status >= 400) {
@@ -535,12 +589,14 @@ const plugin = {
             },
             onComplete: () => {
               stopTypingLoop(outboundTarget);
+              stopStillThinkingTimer(outboundTarget);
             },
           },
         });
       } catch (err: any) {
         log.error(`[sendblue] dispatch failed: ${err.message}`);
         stopTypingLoop(senderNumber);
+        stopStillThinkingTimer(senderNumber);
       }
 
       // Respond to webhook immediately
